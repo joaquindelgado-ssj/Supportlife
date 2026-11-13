@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Brazalete de Salud — Monitor</title>
+<style>
+  :root{--bg:#0f1720;--card:#18232f;--line:#26364a;--tx:#e8eef5;--mut:#8ea3b8;--ok:#3ddc97;--warn:#ffb020;--bad:#ff5d6c;--bpm:#ff6b81;--spo:#4cc9f0;--tmp:#ffb020;--mov:#a78bfa}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  header{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--line)}
+  h1{font-size:18px;margin:0}
+  h1 small{display:block;font-weight:400;color:var(--mut);font-size:12px}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  select,button{background:var(--card);color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:8px 12px;font:inherit}
+  button{cursor:pointer}
+  button.on{background:#14532d;border-color:var(--ok)}
+  .badge{padding:4px 10px;border-radius:999px;font-size:12px;border:1px solid var(--line)}
+  .badge.live{color:var(--ok);border-color:var(--ok)}
+  .badge.off{color:var(--bad);border-color:var(--bad)}
+  main{padding:20px;max-width:1100px;margin:0 auto}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px}
+  .card h2{margin:0 0 6px;font-size:13px;font-weight:600;color:var(--mut);text-transform:uppercase;letter-spacing:.05em}
+  .big{font-size:42px;font-weight:700;line-height:1}
+  .big span{font-size:16px;font-weight:400;color:var(--mut);margin-left:4px}
+  .sub{margin-top:6px;font-size:12px;color:var(--mut);min-height:16px}
+  .charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px;margin-top:14px}
+  canvas{width:100%;height:150px;display:block}
+  .alert{margin-top:14px;padding:12px 16px;border-radius:12px;border:1px solid var(--warn);background:#3a2a05;display:none}
+  .alert.bad{border-color:var(--bad);background:#40121a}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:right;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th:first-child,td:first-child{text-align:left}
+  th{color:var(--mut);font-weight:600}
+  footer{color:var(--mut);font-size:12px;text-align:center;padding:20px}
+  .tag{font-size:11px;color:var(--mut)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Brazalete de Salud<small>SpO₂ · pulsaciones · temperatura · movimiento del brazo</small></h1>
+  <div class="row">
+    <select id="dev" title="Dispositivo"></select>
+    <button id="sim">▶ Iniciar simulador</button>
+    <span id="status" class="badge off">sin datos</span>
+  </div>
+</header>
+<main>
+  <div class="grid">
+    <div class="card"><h2>Pulsaciones</h2><div class="big" style="color:var(--bpm)"><b id="v-bpm">--</b><span>BPM</span></div><div class="sub" id="s-bpm"></div></div>
+    <div class="card"><h2>Oxígeno en sangre</h2><div class="big" style="color:var(--spo)"><b id="v-spo">--</b><span>% SpO₂</span></div><div class="sub" id="s-spo"></div></div>
+    <div class="card"><h2>Temperatura</h2><div class="big" style="color:var(--tmp)"><b id="v-tmp">--</b><span>°C</span></div><div class="sub" id="s-tmp"></div></div>
+    <div class="card"><h2>Movimiento del brazo</h2><div class="big" style="color:var(--mov)"><b id="v-mov">--</b><span>%</span></div><div class="sub" id="s-mov"></div></div>
+  </div>
+  <div id="alert" class="alert"></div>
+  <div class="charts">
+    <div class="card"><h2>Pulsaciones (BPM)</h2><canvas id="c-bpm"></canvas></div>
+    <div class="card"><h2>SpO₂ (%)</h2><canvas id="c-spo"></canvas></div>
+    <div class="card"><h2>Temperatura (°C)</h2><canvas id="c-tmp"></canvas></div>
+    <div class="card"><h2>Movimiento (%)</h2><canvas id="c-mov"></canvas></div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <h2>Últimas lecturas <span class="tag" id="n-read"></span></h2>
+    <table><thead><tr><th>Hora</th><th>BPM</th><th>SpO₂</th><th>Temp</th><th>Mov.</th><th>Origen</th></tr></thead><tbody id="rows"></tbody></table>
+  </div>
+</main>
+<footer>Prototipo escolar — Prácticas Profesionalizantes · Otto Krause · Los valores no son un diagnóstico médico.</footer>
+<script>
+const $ = id => document.getElementById(id);
+let device = 'brazalete-01', simTimer = null, simT = 0, localSeries = [], localMode = false;
+function localData() {
+  const series = localSeries.slice(-60);
+  return { device: 'demo-simulador', now: new Date().toISOString(), devices: [{ id: 'demo-simulador', name: 'demo-simulador (modo local)' }], latest: series[series.length - 1] || null, series };
+}
+
+/* ---------- gráficos ---------- */
+function draw(cv, vals, color, lo, hi, fixed) {
+  const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+  cv.width = W * dpr; cv.height = H * dpr;
+  const g = cv.getContext('2d'); g.scale(dpr, dpr); g.clearRect(0, 0, W, H);
+  const v = vals.filter(x => x != null);
+  if (!v.length) { g.fillStyle = '#8ea3b8'; g.font = '13px system-ui'; g.fillText('sin datos', 8, 20); return; }
+  let mn = fixed ? lo : Math.min(...v, lo), mx = fixed ? hi : Math.max(...v, hi);
+  if (mx - mn < 1) { mx += .5; mn -= .5; }
+  const pad = 26, y = x => H - 16 - (x - mn) / (mx - mn) * (H - 28);
+  g.strokeStyle = '#26364a'; g.fillStyle = '#8ea3b8'; g.font = '11px system-ui'; g.lineWidth = 1;
+  for (let i = 0; i <= 3; i++) {
+    const val = mn + (mx - mn) * i / 3, yy = y(val);
+    g.beginPath(); g.moveTo(pad, yy); g.lineTo(W, yy); g.stroke();
+    g.fillText(val.toFixed(mx - mn < 10 ? 1 : 0), 0, yy + 4);
+  }
+  g.strokeStyle = color; g.lineWidth = 2; g.beginPath();
+  let first = true;
+  vals.forEach((x, i) => {
+    if (x == null) { first = true; return; }
+    const px = pad + i / Math.max(vals.length - 1, 1) * (W - pad - 4);
+    if (first) { g.moveTo(px, y(x)); first = false; } else g.lineTo(px, y(x));
+  });
+  g.stroke();
+}
+
+/* ---------- estado ---------- */
+const f = (x, d = 0) => x == null ? '--' : Number(x).toFixed(d);
+function level(el, txt, cls) { el.textContent = txt; el.style.color = cls ? `var(--${cls})` : ''; }
+
+function render(data) {
+  const s = data.series, L = data.latest;
+  const age = L ? (Date.parse(data.now) - Date.parse(L.ts)) / 1000 : null;
+  const live = age != null && age < 15;
+  $('status').textContent = L ? (live ? 'en línea' : `sin señal hace ${age > 3600 ? '>1 h' : Math.round(age) + ' s'}`) : 'sin datos';
+  $('status').className = 'badge ' + (live ? 'live' : 'off');
+  $('v-bpm').textContent = f(L?.bpm); $('v-spo').textContent = f(L?.spo2); $('v-tmp').textContent = f(L?.temp_c, 1);
+  $('v-mov').textContent = f(L?.motion);
+  const alerts = [];
+  let t;
+  if (L?.finger === false) { level($('s-bpm'), 'Sin dedo en el sensor', 'warn'); level($('s-spo'), 'Sin dedo en el sensor', 'warn'); }
+  else {
+    t = L?.bpm == null ? '' : L.bpm < 50 ? 'Bajo' : L.bpm > 120 ? 'Alto' : 'Normal';
+    level($('s-bpm'), t, t === 'Normal' ? 'ok' : t ? 'bad' : '');
+    if (t && t !== 'Normal') alerts.push(['bad', `Pulsaciones ${t.toLowerCase()}: ${f(L.bpm)} BPM`]);
+    t = L?.spo2 == null ? '' : L.spo2 < 90 ? 'Crítico' : L.spo2 < 94 ? 'Bajo' : 'Normal';
+    level($('s-spo'), t, t === 'Normal' ? 'ok' : t === 'Bajo' ? 'warn' : t ? 'bad' : '');
+    if (t === 'Crítico') alerts.push(['bad', `SpO₂ crítica: ${f(L.spo2)} %`]);
+    else if (t === 'Bajo') alerts.push(['warn', `SpO₂ baja: ${f(L.spo2)} %`]);
+  }
+  t = L?.temp_c == null ? '' : L.temp_c >= 38 ? 'Fiebre' : L.temp_c >= 37.5 ? 'Febrícula' : L.temp_c < 35 ? 'Baja' : 'Normal';
+  level($('s-tmp'), t, t === 'Normal' ? 'ok' : t ? 'bad' : '');
+  if (t && t !== 'Normal') alerts.push([t === 'Febrícula' ? 'warn' : 'bad', `Temperatura ${t.toLowerCase()}: ${f(L.temp_c, 1)} °C`]);
+  t = L?.motion == null ? '' : L.motion > 70 ? 'Movimiento brusco' : L.motion > 25 ? 'Activo' : 'En reposo';
+  level($('s-mov'), t, t === 'Movimiento brusco' ? 'warn' : '');
+  const al = $('alert');
+  if (alerts.length) { al.style.display = 'block'; al.className = 'alert' + (alerts.some(a => a[0] === 'bad') ? ' bad' : ''); al.innerHTML = '⚠ ' + alerts.map(a => a[1]).join(' · '); }
+  else al.style.display = 'none';
+  draw($('c-bpm'), s.map(r => r.bpm), '#ff6b81', 50, 110);
+  draw($('c-spo'), s.map(r => r.spo2), '#4cc9f0', 90, 100, true);
+  draw($('c-tmp'), s.map(r => r.temp_c), '#ffb020', 35, 38);
+  draw($('c-mov'), s.map(r => r.motion), '#a78bfa', 0, 100, true);
+  $('n-read').textContent = `(${s.length} en el gráfico)`;
+  $('rows').innerHTML = s.slice(-10).reverse().map(r => `<tr><td>${new Date(r.ts).toLocaleTimeString('es-AR')}</td><td>${f(r.bpm)}</td><td>${f(r.spo2)}</td><td>${f(r.temp_c, 1)}</td><td>${f(r.motion)}</td><td>${r.simulated ? 'simulado' : 'ESP32'}</td></tr>`).join('');
+  const sel = $('dev');
+  if (!sel.dataset.ready || sel.options.length !== data.devices.length) {
+    sel.innerHTML = data.devices.map(d => `<option value="${d.id}">${d.name === d.id ? d.id : d.name}</option>`).join('');
+    sel.dataset.ready = '1';
+  }
+  sel.value = device;
+}
+
+async function poll() {
+  if (localMode) { device = 'demo-simulador'; render(localData()); return; }
+  try {
+    const r = await fetch(`/api/readings?device=${encodeURIComponent(device)}&limit=60`);
+    if (r.ok) render(await r.json());
+    else throw new Error('api');
+  } catch (e) {
+    if (simTimer) { localMode = true; render(localData()); }
+    else { $('status').textContent = 'sin conexion con el servidor'; $('status').className = 'badge off'; }
+  }
+}
+$('dev').onchange = e => { device = e.target.value; poll(); };
+
+/* ---------- simulador (corre en el navegador y guarda en la base) ---------- */
+function fake() {
+  simT += 1;
+  const rest = Math.sin(simT / 25), burst = (simT % 40) > 33;
+  const bpm = 72 + 6 * rest + (burst ? 14 : 0) + (Math.random() - .5) * 3;
+  const spo2 = Math.min(100, 97.5 + Math.sin(simT / 17) * 1.2 + (Math.random() - .5) * .6);
+  const temp = 36.6 + Math.sin(simT / 60) * .25 + (Math.random() - .5) * .05;
+  const motion = burst ? 75 + Math.random() * 20 : 6 + Math.random() * 14;
+  return { bpm: +bpm.toFixed(0), spo2: +spo2.toFixed(0), temp: +temp.toFixed(1), motion: +motion.toFixed(0),
+           ax: +(Math.random() - .5).toFixed(2), ay: +(Math.random() - .5).toFixed(2), az: +(9.8 + Math.random() * .2).toFixed(2),
+           finger: true, bat: 3.9 };
+}
+$('sim').onclick = () => {
+  if (simTimer) { clearInterval(simTimer); simTimer = null; localMode = false; $('sim').textContent = '▶ Iniciar simulador'; $('sim').className = ''; return; }
+  device = 'demo-simulador';
+  const tick = async () => {
+    const d = fake();
+    localSeries.push({ ts: new Date().toISOString(), bpm: d.bpm, spo2: d.spo2, temp_c: d.temp, motion: d.motion, finger: true, simulated: true });
+    if (localSeries.length > 200) localSeries.shift();
+    if (!localMode) {
+      try {
+        const r = await fetch('/api/demo', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(d) });
+        if (!r.ok) throw new Error('api');
+      } catch (e) { localMode = true; }
+    }
+    poll();
+  };
+  tick(); simTimer = setInterval(tick, 2000);
+  $('sim').textContent = '■ Detener simulador'; $('sim').className = 'on';
+};
+poll(); setInterval(poll, 2000);
+window.addEventListener('resize', poll);
+</script>
+</body>
+</html>

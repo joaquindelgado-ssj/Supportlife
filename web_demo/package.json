@@ -1,0 +1,9 @@
+{
+  "name": "brazalete-salud-demo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Demo web del Brazalete de Salud (Practicas Profesionalizantes - Otto Krause)",
+  "dependencies": {
+    "@neondatabase/serverless": "^1.0.0"
+  }
+}
